@@ -77,7 +77,8 @@ parse-args() {
 toggle-systemd-firstboot() {
     msg2 "Toggle systemd-firstboot..."
     sudo rm -f mnt/etc/{machine-id,hostname,shadow}
-    sudo systemd-nspawn -D mnt systemctl enable systemd-firstboot.service
+    # Mask Arch filesystem's factory to avoid the removed shadow file being copied over
+    sudo ln -s /dev/null mnt/etc/tmpfiles.d/arch.conf
 }
 
 use-fixed-password() {
@@ -153,7 +154,9 @@ else
 fi
 
 msg "Partitioning..."
-(echo n; echo p; echo 1; echo ''; echo ''; echo w) | sudo fdisk "$loopdev"
+# FIXME: otherwise NBD device is not ready
+sleep 1s
+sudo parted "$loopdev" mklabel gpt mkpart "" "$fstype" 0% 100%
 
 sudo partprobe "$loopdev"
 partdev="$loopdev"p1
