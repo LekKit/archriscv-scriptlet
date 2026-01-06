@@ -62,6 +62,9 @@ sudo pacstrap \
     ./rootfs \
     base
 
+msg "Disable sandbox to fix old kernels / userland emulation"
+sudo sed -E -i 's|#DisableSandbox|DisableSandbox|g' ./rootfs/etc/pacman.conf
+
 msg "Set default mirror to https://riscv.mirror.pkgbuild.com"
 sudo sed -E -i 's|#(Server = https://riscv\.mirror\.pkgbuild\.com/repo/\$repo)|\1|' ./rootfs/etc/pacman.d/mirrorlist
 
