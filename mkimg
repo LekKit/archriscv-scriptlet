@@ -7,18 +7,21 @@
 . /usr/share/makepkg/util.sh
 colorize
 
+set -e
+
 verbose=0
+verbose_arg=
 use_fixed_password=0
 build_firmware=1
-varbose_arg=
 rootfs="archriscv-$(date --rfc-3339=date).tar.zst"
-fstype=ext4
-kernel=linux
-kernel_suffix=""
-cmdline=""
+imgsize='16G'
+fstype='ext4'
+kernel='linux'
+kernel_suffix=''
+cmdline=''
 
-uboot_version=v2023.10
-opensbi_version=v1.3.1
+uboot_version='v2025.01'
+opensbi_version='v1.6'
 
 show_help() {
 cat << EOF
@@ -30,26 +33,27 @@ Create Arch RISC-V distro image.
                 unless the extension is qcow2, implies raw disk format
 
     -h          display this help and exit
+    -v          verbose mode
     -f          use fixed password instead of using systemd-firstboot to ask
     -d          only build the disk image and omit building OpenSBI/U-Boot
     -p PASSWORD set root password to PASSWORD instead of passwd in rootfs
     -r ROOTFS   specify rootfs file name
+    -l IMGSIZE  specify image size, e.g. 10G
     -t FSTYPE   specify rootfs filesystem type (default: ext4)
     -k KERNEL   specify kernel package name (default: linux)
     -c CMDLINE  append CMDLINE to kernel command line
-    -v          verbose mode
 EOF
 }
 
 parse-args() {
     local OPTIND=1
-    while getopts 'hvfdr:t:p:k:c:' opt; do
+    while getopts 'hvfdp:r:l:t:k:c:' opt; do
       case $opt in
         h)  show_help
             exit 0
             ;;
         v)  verbose=$((verbose+1))
-            varbose_arg="--verbose"
+            verbose_arg="--verbose"
             ;;
         f)  use_fixed_password=1
             ;;
@@ -58,6 +62,8 @@ parse-args() {
         p)  password=$OPTARG
             ;;
         r)  rootfs=$OPTARG
+            ;;
+        l)  imgsize=$OPTARG
             ;;
         t)  fstype=$OPTARG
             ;;
@@ -88,10 +94,13 @@ use-fixed-password() {
 
 parse-args "$@"
 
-if [ $build_firmware == 1 ]
+#
+# Build firmware (OpenSBI + U-Boot) if needed
+#
+
+if [[ $build_firmware == 1 ]]
 then
     msg "Building U-Boot..."
-
     if [[ -d u-boot ]]; then
         pushd u-boot
         git checkout HEAD -- ':(top)'
@@ -103,19 +112,22 @@ then
     fi
     pushd u-boot
 
-    make \
+    make -j$(nproc) \
         CROSS_COMPILE=riscv64-linux-gnu- \
         qemu-riscv64_smode_defconfig
-    ./scripts/config \
-        -e CMD_BTRFS -e FS_BTRFS
-    make \
+    if [[ "$fstype" == "btrfs" ]]
+    then
+        msg "Enabling BTRFS support in U-Boot"
+        ./scripts/config -e CMD_BTRFS -e FS_BTRFS
+    fi
+    make -j$(nproc) \
         CROSS_COMPILE=riscv64-linux-gnu- \
         olddefconfig
-    make CROSS_COMPILE=riscv64-linux-gnu-
+    make -j$(nproc) \
+        CROSS_COMPILE=riscv64-linux-gnu-
     popd
 
     msg "Building OpenSBI..."
-
     if [[ -d opensbi ]]; then
         pushd opensbi
         git checkout HEAD -- ':(top)'
@@ -127,31 +139,39 @@ then
     fi
     pushd opensbi
 
-    # If user set it, OpenSBI will failed to build.
+    # If user set it, OpenSBI will fail to build.
     unset PYTHONSAFEPATH
 
-    make \
+    make -j$(nproc) \
         CROSS_COMPILE=riscv64-linux-gnu- \
         PLATFORM=generic \
         FW_PAYLOAD_PATH=../u-boot/u-boot.bin
     popd
 
-    cp ./opensbi/build/platform/generic/firmware/fw_payload.bin opensbi_fw_payload.bin
+    cp ./opensbi/build/platform/generic/firmware/fw_payload.bin ./
 fi
 
-if [[ $filename == *.qcow2 ]]
+#
+# Create QCOW2 or RAW image of requested size (16G by default)
+#
+
+if [[ "$filename" == *.qcow2 ]]
 then
     msg "Create QCOW2 image..."
-    qemu-img create -f qcow2 "$filename" 10G
+    qemu-img create -f qcow2 "$filename" "$imgsize"
     sudo modprobe nbd max_part=16 || exit 1
     # Possible NBD device collision?
     sudo qemu-nbd -c /dev/nbd0 "$filename"
     loopdev=/dev/nbd0
 else
     msg "Create raw image..."
-    fallocate "$filename" -l 10G
+    fallocate "$filename" -l "$imgsize"
     loopdev=$(sudo losetup --show -P -f "$filename")
 fi
+
+#
+# Partition the image into a single rootfs
+#
 
 msg "Partitioning..."
 # FIXME: otherwise NBD device is not ready
@@ -169,11 +189,19 @@ sudo chown root:root mnt
 
 uuid=$(sudo findmnt mnt -o UUID -n)
 
+#
+# Extract existing distro rootfs tarfile
+#
+
 msg "Extract rootfs..."
 
 pushd mnt
-sudo bsdtar $varbose_arg -kpxf "../$rootfs"
+sudo bsdtar $verbose_arg -kpxf "../$rootfs"
 popd
+
+#
+# Install kernel & firmware
+#
 
 msg "Install kernel package..."
 
@@ -186,6 +214,10 @@ fi
 sudo systemd-nspawn -D mnt pacman \
     --noconfirm --needed \
     -Syu $kernel linux-firmware
+
+#
+# Create extlinux boot entries for U-Boot
+#
 
 sudo mkdir -p mnt/boot/extlinux
 cat << EOF | sudo tee mnt/boot/extlinux/extlinux.conf
@@ -206,6 +238,10 @@ label linux-fallback
     append earlyprintk rw root=UUID=$uuid rootwait console=ttyS0,115200 $cmdline
 EOF
 
+#
+# Enable DHCP networking by default
+#
+
 cat << EOF | sudo tee mnt/etc/systemd/network/default.network
 [Match]
 Name=en*
@@ -214,6 +250,10 @@ Name=en*
 DHCP=yes
 EOF
 sudo systemd-nspawn -D mnt systemctl enable systemd-networkd.service
+
+#
+# Graceful completion
+#
 
 msg "Clean up..."
 msg2 "Clean up pacman package cache..."
