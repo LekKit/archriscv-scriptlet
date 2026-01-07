@@ -144,7 +144,7 @@ fi
 # Create QCOW2 or RAW image of requested size (16G by default)
 #
 
-if [ "$filename" == *.qcow2 ]
+if [[ "$filename" == *.qcow2 ]]
 then
     msg "Create QCOW2 image..."
     qemu-img create -f qcow2 "$filename" "$imgsize"
