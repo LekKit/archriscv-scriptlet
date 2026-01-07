@@ -1,6 +1,6 @@
 # Arch RISC-V Scriptlet
 
-Useful scripts for building and running Arch RISC-V Qcow image.
+Useful scripts for building and running Arch RISC-V QCOW2 / raw image.
 
 ## Prerequisite
 
@@ -8,7 +8,7 @@ Useful scripts for building and running Arch RISC-V Qcow image.
 * parted
 * git
 * qemu-img
-* qemu-system-riscv
+* qemu-system-riscv or rvvm ([AUR](https://aur.archlinux.org/packages/rvvm-git))
 * riscv64-linux-gnu-gcc
 * devtools-riscv64 ([AUR](https://aur.archlinux.org/packages/devtools-riscv64))
 
@@ -16,15 +16,17 @@ Useful scripts for building and running Arch RISC-V Qcow image.
 
 ```bash
 ./mkrootfs
-./mkimg
+./mkimg [image file]
 ```
 
 ## Start QEMU
-
-> [!IMPORTANT]
-> You must use fallback initrd first, and re-generate initramfs with `mkinitcpio -P` to use non-fallback version later.
 
 ```bash
 ./startqemu.sh [qcow image file]
 ```
 
+## Start RVVM
+
+```bash
+./startrvvm.sh [raw image file]
+```
