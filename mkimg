@@ -19,6 +19,7 @@ fstype='ext4'
 kernel='linux'
 kernel_suffix=''
 cmdline=''
+packages=
 
 uboot_version='v2025.01'
 opensbi_version='v1.6'
@@ -42,12 +43,13 @@ Create Arch RISC-V distro image.
     -t FSTYPE   specify rootfs filesystem type (default: ext4)
     -k KERNEL   specify kernel package name (default: linux)
     -c CMDLINE  append CMDLINE to kernel command line
+    -i PACKAGE  install additional packages (Like linux-firmware)
 EOF
 }
 
 parse-args() {
     local OPTIND=1
-    while getopts 'hvfdp:r:l:t:k:c:' opt; do
+    while getopts 'hvfdp:r:l:t:k:c:i:' opt; do
       case $opt in
         h)  show_help
             exit 0
@@ -70,6 +72,8 @@ parse-args() {
         k)  kernel=$OPTARG
             ;;
         c)  cmdline=$OPTARG
+            ;;
+        i)  packages="$packages $OPTARG"
             ;;
         *)  show_help >&2
             exit 1
@@ -200,10 +204,10 @@ sudo bsdtar $verbose_arg -kpxf "../$rootfs"
 popd
 
 #
-# Install kernel & firmware
+# Install kernel & user-requested packages
 #
 
-msg "Install kernel package..."
+msg "Install kernel & packages..."
 
 if [[ $kernel != linux ]]
 then
@@ -213,7 +217,7 @@ fi
 
 sudo systemd-nspawn -D mnt pacman \
     --noconfirm --needed \
-    -Syu $kernel linux-firmware
+    -Syu $kernel $packages
 
 #
 # Create extlinux boot entries for U-Boot
