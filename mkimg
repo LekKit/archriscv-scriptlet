@@ -55,7 +55,7 @@ parse-args() {
             exit 0
             ;;
         v)  verbose=$((verbose+1))
-            verbose_arg="--verbose"
+            verbose_arg='--verbose'
             ;;
         f)  use_fixed_password=1
             ;;
@@ -102,26 +102,17 @@ parse-args "$@"
 # Build firmware (OpenSBI + U-Boot) if needed
 #
 
-if [[ $build_firmware == 1 ]]
+if [ $build_firmware == 1 ] && [ ! -f './fw_payload.bin' ]
 then
     msg "Building U-Boot..."
-    if [[ -d u-boot ]]; then
-        pushd u-boot
-        git checkout HEAD -- ':(top)'
-        git fetch origin
-        git checkout $uboot_version
-        popd
-    else
-        git clone --filter=blob:none -b $uboot_version https://github.com/u-boot/u-boot.git
-    fi
-    pushd u-boot
-
+    git clone --filter=blob:none -b $uboot_version https://github.com/u-boot/u-boot.git
+    pushd u-boot >/dev/null
     make -j$(nproc) \
         CROSS_COMPILE=riscv64-linux-gnu- \
         qemu-riscv64_smode_defconfig
     if [[ "$fstype" == "btrfs" ]]
     then
-        msg "Enabling BTRFS support in U-Boot"
+        msg2 "Enabling BTRFS support in U-Boot"
         ./scripts/config -e CMD_BTRFS -e FS_BTRFS
     fi
     make -j$(nproc) \
@@ -129,19 +120,11 @@ then
         olddefconfig
     make -j$(nproc) \
         CROSS_COMPILE=riscv64-linux-gnu-
-    popd
+    popd >/dev/null
 
     msg "Building OpenSBI..."
-    if [[ -d opensbi ]]; then
-        pushd opensbi
-        git checkout HEAD -- ':(top)'
-        git fetch origin
-        git checkout $opensbi_version
-        popd
-    else
-        git clone --filter=blob:none -b $opensbi_version https://github.com/riscv-software-src/opensbi
-    fi
-    pushd opensbi
+    git clone --filter=blob:none -b $opensbi_version https://github.com/riscv-software-src/opensbi
+    pushd opensbi >/dev/null
 
     # If user set it, OpenSBI will fail to build.
     unset PYTHONSAFEPATH
@@ -150,16 +133,18 @@ then
         CROSS_COMPILE=riscv64-linux-gnu- \
         PLATFORM=generic \
         FW_PAYLOAD_PATH=../u-boot/u-boot.bin
-    popd
+    popd >/dev/null
 
     cp ./opensbi/build/platform/generic/firmware/fw_payload.bin ./
+    rm -rf ./u-boot
+    rm -rf ./opensbi
 fi
 
 #
 # Create QCOW2 or RAW image of requested size (16G by default)
 #
 
-if [[ "$filename" == *.qcow2 ]]
+if [ "$filename" == *.qcow2 ]
 then
     msg "Create QCOW2 image..."
     qemu-img create -f qcow2 "$filename" "$imgsize"
@@ -168,8 +153,13 @@ then
     sudo qemu-nbd -c /dev/nbd0 "$filename"
     loopdev=/dev/nbd0
 else
-    msg "Create raw image..."
-    fallocate "$filename" -l "$imgsize"
+    if truncate "$filename" -s 0 2>/dev/null
+    then
+        msg "Create raw image..."
+        truncate "$filename" -s "$imgsize"
+    else
+        msg "Assuming we are targeting a raw block device"
+    fi
     loopdev=$(sudo losetup --show -P -f "$filename")
 fi
 
@@ -179,7 +169,7 @@ fi
 
 msg "Partitioning..."
 # FIXME: otherwise NBD device is not ready
-sleep 1s
+sleep 3s
 sudo parted "$loopdev" mklabel gpt mkpart "" "$fstype" 0% 100%
 
 sudo partprobe "$loopdev"
@@ -199,9 +189,36 @@ uuid=$(sudo findmnt mnt -o UUID -n)
 
 msg "Extract rootfs..."
 
-pushd mnt
+pushd mnt >/dev/null
 sudo bsdtar $verbose_arg -kpxf "../$rootfs"
-popd
+popd >/dev/null
+
+#
+# Disable module autodetect filtering. This fixes boot on wildly different hardware from image build host.
+#
+# Disable initramfs compression. The net effect is that, on slow CPUs without SIMD-accelerated zstd,
+# initramfs boots faster (Plus the modules decompression now runs in SMP).
+#
+
+msg "Fixup mkinitcpio"
+sudo mkdir -p mnt/etc/mkinitcpio.d
+cat << EOF | sudo tee mnt/etc/mkinitcpio.d/linux.preset >/dev/null
+# mkinitcpio preset file for the 'linux' package
+ALL_kver="/boot/vmlinuz-linux"
+PRESETS=('default')
+default_image="/boot/initramfs-linux.img"
+fallback_image="/boot/initramfs-linux-fallback.img"
+fallback_options="-S autodetect"
+EOF
+cat << EOF | sudo tee mnt/etc/mkinitcpio.conf >/dev/null
+# vim:set ft=sh:
+MODULES=()
+BINARIES=()
+FILES=()
+HOOKS=(base udev microcode modconf block filesystems fsck)
+COMPRESSION="cat"
+MODULES_DECOMPRESS="no"
+EOF
 
 #
 # Install kernel & user-requested packages
@@ -209,10 +226,10 @@ popd
 
 msg "Install kernel & packages..."
 
-if [[ $kernel != linux ]]
+if [ "$kernel" != 'linux' ]
 then
     kernel_suffix="${kernel#linux}"
-    echo -e "[unsupported]\nInclude = /etc/pacman.d/mirrorlist" | sudo tee -a mnt/etc/pacman.conf
+    echo -e "[unsupported]\nInclude = /etc/pacman.d/mirrorlist" | sudo tee -a mnt/etc/pacman.conf >/dev/null
 fi
 
 sudo systemd-nspawn -D mnt pacman \
@@ -224,29 +241,23 @@ sudo systemd-nspawn -D mnt pacman \
 #
 
 sudo mkdir -p mnt/boot/extlinux
-cat << EOF | sudo tee mnt/boot/extlinux/extlinux.conf
+cat << EOF | sudo tee mnt/boot/extlinux/extlinux.conf >/dev/null
 menu title Arch RISC-V Boot Menu
 timeout 100
-default linux-fallback
+default linux
 
 label linux
     menu label Linux linux
     kernel /boot/vmlinuz-linux$kernel_suffix
     initrd /boot/initramfs-linux$kernel_suffix.img
-    append earlyprintk rw root=UUID=$uuid rootwait console=ttyS0,115200 $cmdline
-
-label linux-fallback
-    menu label Linux linux (fallback initramfs)
-    kernel /boot/vmlinuz-linux$kernel_suffix
-    initrd /boot/initramfs-linux$kernel_suffix-fallback.img
-    append earlyprintk rw root=UUID=$uuid rootwait console=ttyS0,115200 $cmdline
+    append rw root=UUID=$uuid rootwait $cmdline
 EOF
 
 #
 # Enable DHCP networking by default
 #
 
-cat << EOF | sudo tee mnt/etc/systemd/network/default.network
+cat << EOF | sudo tee mnt/etc/systemd/network/default.network >/dev/null
 [Match]
 Name=en*
 
@@ -269,6 +280,7 @@ yes y | sudo pacman \
 
 msg2 "Unmount and sync..."
 sudo umount mnt
+sudo rmdir mnt
 if [[ $filename == *.qcow2 ]]
 then
     sudo qemu-nbd -d "$loopdev"
