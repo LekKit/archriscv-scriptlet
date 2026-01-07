@@ -10,10 +10,11 @@ colorize
 verbose=0
 verbose_arg=
 password='archriscv'
+packages=
 
 show_help() {
 cat << EOF
-Usage: ${0##*/} [-hv] [-p PASSWORD] [FILENAME]
+Usage: ${0##*/} [-hv] [-p PASSWORD] [-i PACKAGE] [FILENAME]
 Create Arch RISC-V rootfs.
 
     FILENAME    generated rootfs file name, use the archive suffix to decide
@@ -21,14 +22,15 @@ Create Arch RISC-V rootfs.
                 default: 'archriscv-$(date --rfc-3339=date).tar.zst'
 
     -h          display this help and exit
-    -p PASSWORD set root password to PASSWORD instead of archriscv
     -v          verbose mode
+    -p PASSWORD set root password to PASSWORD instead of archriscv
+    -i PACKAGE  install additional packages
 EOF
 }
 
 parse-args() {
     local OPTIND=1
-    while getopts 'hvp:' opt; do
+    while getopts 'hvp:i:' opt; do
       case $opt in
         h)
             show_help
@@ -38,6 +40,8 @@ parse-args() {
             verbose_arg="--verbose"
             ;;
         p)  password=$OPTARG
+            ;;
+        i)  packages="$packages $OPTARG"
             ;;
         *)
             show_help >&2
@@ -60,10 +64,13 @@ sudo pacstrap \
     -M \
     -K \
     ./rootfs \
-    base
+    base $packages
 
-msg "Disable sandbox to fix old kernels / userland emulation"
+msg "Tune pacman.conf (Disable sandbox & CheckSpace, Color)"
+sudo sed -E -i 's|#Color|Color|' ./rootfs/etc/pacman.conf
+# Pacman sandbox fails under qemu-user & old kernels, similar issues with CheckSpace
 sudo sed -E -i 's|#DisableSandbox|DisableSandbox|g' ./rootfs/etc/pacman.conf
+sudo sed -E -i 's|CheckSpace|#CheckSpace|' ./rootfs/etc/pacman.conf
 
 msg "Enable fallback initramfs"
 sudo mkdir -p ./rootfs/etc/mkinitcpio.d
